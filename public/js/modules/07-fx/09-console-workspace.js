@@ -285,6 +285,17 @@ var FX_CONSOLE_LAYOUT = [
       { key: 'cache', title: '缓存与存储', hint: '统一缓存目录、占用和各类路径', items: [
         fxConsoleItem('cache-storage-panel', '本地缓存', '缓存路径 缓存目录 占用 歌词 封面 音频 更新', false)
       ] },
+      { key: 'unm', title: '音源解锁', hint: 'UnblockNeteaseMusic 音源顺序与凭据', items: [
+        fxConsoleItem('t-unmEnabled', '启用音源解锁', 'UNM 解锁 无VIP 音源'),
+        fxConsoleItem('unm-config-status', 'UNM 状态', '音源顺序 凭据 配置', false),
+        fxConsoleItem({ selector: '.unm-source-list' }, '音源顺序', '酷狗 酷我 咪咕 波点 QQ B站 顺序', false),
+        fxConsoleItem('unm-qq-cookie', 'QQ 音乐 Cookie', 'UNM QQ 凭据 qm_keyst', false),
+        fxConsoleItem('unm-migu-cookie', '咪咕 aversionid', 'UNM 咪咕 凭据', false),
+        fxConsoleItem('unm-joox-cookie', 'JOOX Cookie', 'UNM JOOX 凭据 wmid', false),
+        fxConsoleItem('t-unmStrictSourceOrder', '严格按顺序', 'UNM 并行 音质最高'),
+        fxConsoleItem('t-unmEnableFlac', '无损优先', 'UNM FLAC 无损'),
+        fxConsoleItem('t-unmSearchAlbum', '附带专辑搜索', 'UNM 专辑 匹配')
+      ] },
       { key: 'experimental', title: '实验功能', hint: '尚未开放或需要谨慎使用的能力', items: [
         fxConsoleItem('t-wallpaperMode', '完整桌面模式', '完整 Mineradio 进入桌面层 Ctrl Shift M 切换操作层 本次启动有效', false)
       ] }
@@ -301,7 +312,7 @@ function fxConsoleResolveBlock(ref) {
   else if (ref && ref.element) el = ref.element;
   else if (ref && ref.selector) el = document.querySelector('#fx-panel ' + ref.selector) || document.querySelector(ref.selector);
   if (!el) return null;
-  var selector = '.fx-slider,.lyric-color-row,.lyric-color-grid,.fx-seg,.preset-grid,.user-archive-grid,.fx-font-grid,.fx-toggle,.lyric-glitch-controls,.lyric-glow-effect-row,.sonic-audio-monitor,.audio-output-section,.cache-storage-panel,.memory-status-chip,.memory-status-sub,.memory-action-row,.fx-actions';
+  var selector = '.fx-slider,.lyric-color-row,.lyric-color-grid,.fx-seg,.preset-grid,.user-archive-grid,.fx-font-grid,.fx-toggle,.lyric-glitch-controls,.lyric-glow-effect-row,.sonic-audio-monitor,.audio-output-section,.cache-storage-panel,.memory-status-chip,.memory-status-sub,.memory-action-row,.unm-source-list,.unm-cookie-row,.unm-status-chip,.unm-test-result,.fx-actions';
   if (el.matches && el.matches(selector)) return el;
   return el.closest ? (el.closest(selector) || el) : el;
 }
@@ -424,7 +435,7 @@ function fxConsoleAppendItem(body, tabMeta, groupMeta, item, state) {
 }
 
 function fxConsoleFindUnclassifiedControls(roots) {
-  var blockSelector = '.fx-slider,.lyric-color-row,.lyric-color-grid,.fx-seg,.preset-grid,.user-archive-grid,.fx-font-grid,.fx-toggle,.lyric-glitch-controls,.lyric-glow-effect-row,.sonic-audio-monitor,.audio-output-section,.cache-storage-panel,.memory-status-chip,.memory-status-sub,.memory-action-row,.fx-actions';
+  var blockSelector = '.fx-slider,.lyric-color-row,.lyric-color-grid,.fx-seg,.preset-grid,.user-archive-grid,.fx-font-grid,.fx-toggle,.lyric-glitch-controls,.lyric-glow-effect-row,.sonic-audio-monitor,.audio-output-section,.cache-storage-panel,.memory-status-chip,.memory-status-sub,.memory-action-row,.unm-source-list,.unm-cookie-row,.unm-status-chip,.unm-test-result,.fx-actions';
   var blocks = [];
   roots.forEach(function (root) {
     if (!root || !root.isConnected) return;

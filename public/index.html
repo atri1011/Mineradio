@@ -1037,6 +1037,41 @@
             <code class="cache-storage-path small" id="cache-storage-userdata-path">—</code>
             <div class="fx-sub cache-storage-note" id="cache-storage-note">歌词缓存立即切换；网络、节奏分析与 WE 静音场景缓存目录在下次重启后切换。</div>
           </div>
+          <div class="fx-section-label">音源解锁 / UnblockNeteaseMusic</div>
+          <div class="fx-toggle-grid">
+            <div class="fx-toggle" id="t-unmEnabled" onclick="toggleUnmEnabled()"
+              title="当前平台账号没有 VIP 时，自动通过 UNM 从其它公开音源寻找可播放版本；有 VIP 的平台不受影响"><span>启用音源解锁</span><span class="dot"></span></div>
+          </div>
+          <div class="unm-panel" id="unm-settings-panel">
+            <div class="unm-status-chip" id="unm-config-status">UNM 配置读取中...</div>
+            <div class="unm-source-order-head">
+              <span>音源顺序</span>
+              <span class="unm-source-order-hint">从左到右依次尝试</span>
+            </div>
+            <div class="unm-source-list" id="unm-source-list"></div>
+            <div class="unm-cookie-grid">
+              <label class="unm-cookie-row"><span>QQ 音乐 Cookie</span><input type="password" id="unm-qq-cookie"
+                placeholder="uin=...; qm_keyst=..." autocomplete="off"></label>
+              <label class="unm-cookie-row"><span>咪咕 aversionid</span><input type="password" id="unm-migu-cookie"
+                placeholder="选填，提升咪咕音源可用性" autocomplete="off"></label>
+              <label class="unm-cookie-row"><span>JOOX Cookie</span><input type="password" id="unm-joox-cookie"
+                placeholder="wmid=...; session_key=..." autocomplete="off"></label>
+            </div>
+            <div class="fx-toggle-grid">
+              <div class="fx-toggle" id="t-unmStrictSourceOrder" onclick="toggleUnmStrictSourceOrder()"
+                title="开启后严格按上面的顺序逐个尝试；关闭则并行取音质最高的结果"><span>严格按顺序</span><span class="dot"></span></div>
+              <div class="fx-toggle" id="t-unmEnableFlac" onclick="toggleUnmEnableFlac()"
+                title="允许 UNM 返回无损 / FLAC 音质"><span>无损优先</span><span class="dot"></span></div>
+              <div class="fx-toggle" id="t-unmSearchAlbum" onclick="toggleUnmSearchAlbum()"
+                title="搜索候选时附加专辑名，提高匹配精度但可能降低命中率"><span>附带专辑搜索</span><span class="dot"></span></div>
+            </div>
+            <div class="memory-action-row">
+              <button class="fx-mini-btn ghost" type="button" onclick="saveUnmSettings()">保存配置</button>
+              <button class="fx-mini-btn ghost" type="button" onclick="resetUnmSourceOrder()">恢复默认顺序</button>
+              <button class="fx-mini-btn ghost" type="button" onclick="testUnmMatch()">测试解锁</button>
+            </div>
+            <div class="fx-sub cache-storage-note" id="unm-test-result"></div>
+          </div>
           <div class="fx-slider"><label>粒子尺寸</label><input id="fx-point" type="range" min="0.5" max="2.2"
               step="0.01"><output></output></div>
           <div class="fx-slider"><label>流速</label><input id="fx-speed" type="range" min="0.2" max="2.5"

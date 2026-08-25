@@ -654,6 +654,15 @@ async function tryAutoPlaybackFallback(song, data, idx, token, opts) {
     return false;
   }
   if (!song || song.type === 'local' || song.type === 'podcast' || song.source === 'podcast') return null;
+  // UNM 音源解锁：当前平台账号无 VIP（或未登录）时，先尝试 UNM 匹配，
+  // 命中则直接用解锁地址播放，不再走平台换源流程。
+  if (
+    typeof unmShouldBypassProviderRestriction === 'function'
+    && unmShouldBypassProviderRestriction(playbackLoginProvider(song))
+  ) {
+    var unmStarted = await tryUnmUnblockedPlayback(song, data, idx, token, opts);
+    if (unmStarted !== null) return unmStarted;
+  }
   var category = playbackRestrictionCategory(song, data);
   var fromLabel = playbackProviderLabel(song);
   var alternateProviders = alternatePlaybackProviders(song);
@@ -759,4 +768,50 @@ function handlePlaybackUnavailable(song, data) {
       openProviderLogin(provider);
     }, 520);
   }
+}
+
+// UNM 解锁播放：调用 /api/unm/url 拿到其它音源地址后直接接管当前曲目。
+// 返回 true 表示已开始播放，false 表示 UNM 也拿不到，null 表示未启用/跳过。
+async function tryUnmUnblockedPlayback(song, data, idx, token, opts) {
+  if (typeof unmShouldBypassProviderRestriction !== 'function' || !unmShouldBypassProviderRestriction(playbackLoginProvider(song))) return null;
+  if (token !== trackSwitchToken) return null;
+  opts = opts || {};
+  var recovery = typeof sourceFallbackRecoveryFromOptions === 'function'
+    ? sourceFallbackRecoveryFromOptions(opts)
+    : null;
+  if (!recovery && !opts.startupAutoplay && !opts.suppressPlayFailureNotice) {
+    showSourceFallbackNotice('正在尝试 UNM 音源解锁', playbackProviderLabel(song) + ' 当前不可播，正在从其它公开音源寻找同名歌曲。');
+  }
+  var unmUrl = '/api/unm/url?id=' + encodeURIComponent(song.id || song.mid || song.hash || '') +
+    '&name=' + encodeURIComponent(song.name || song.title || '') +
+    '&artist=' + encodeURIComponent(song.artist || '') +
+    '&album=' + encodeURIComponent(song.album || song.albumName || '') +
+    '&duration=' + encodeURIComponent(song.durationMs || song.dt || song.duration || 0);
+  var result = null;
+  try {
+    result = recovery
+      ? await awaitSourceFallbackBudget(apiJson(unmUrl, { timeoutMs: 12000 }), recovery)
+      : await apiJson(unmUrl, { timeoutMs: 12000 });
+  } catch (err) {
+    console.warn('[UNM] match request failed:', err);
+    result = null;
+  }
+  if (recovery && (result === sourceFallbackBudgetTimeoutResult || !sourceFallbackRecoveryCanContinue(recovery))) return null;
+  if (token !== trackSwitchToken) return false;
+  if (!result || !result.url) return false;
+  var unmData = Object.assign({}, result, {
+    provider: 'unm',
+    source: 'unm',
+    unmSource: result.unmSource || result.source || '',
+    trial: false,
+    playable: true,
+  });
+  if (!opts.startupAutoplay) {
+    showSourceFallbackNotice('UNM 解锁成功', '正在通过 ' + ((typeof UNM_SOURCE_LABELS === 'object' && UNM_SOURCE_LABELS[unmData.unmSource]) || unmData.unmSource || 'UNM') + ' 音源播放。');
+  }
+  var started = await playQueueAt(idx, Object.assign({}, opts, {
+    unmPlaybackData: unmData,
+    suppressPlayFailureNotice: true,
+  }));
+  return started === true;
 }

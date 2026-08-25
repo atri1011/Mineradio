@@ -1114,7 +1114,11 @@ async function playQueueAt(idx, opts) {
       }
       var qualityParam = '&quality=' + encodeURIComponent(requestedQuality);
       var data;
-      if (albumGaplessHandoff) {
+      if (opts.unmPlaybackData && opts.unmPlaybackData.url) {
+        // UNM 解锁结果：跳过平台 URL 解析，直接使用解锁地址。
+        data = opts.unmPlaybackData;
+        playbackProvider = 'unm';
+      } else if (albumGaplessHandoff) {
         data = opts.preloadedData;
       } else if (opts.preResolvedPlaybackData && opts.preResolvedPlaybackData.url) {
         data = opts.preResolvedPlaybackData;
@@ -1184,9 +1188,11 @@ async function playQueueAt(idx, opts) {
         return false;
       }
       var resolvedQualityText = playbackResolvedQualityText(data, playbackProvider);
-      var qualityDowngraded = !!(data && data.level && playbackQualityWasDowngraded(requestedQuality, data.level, playbackProvider));
+      var qualityDowngraded = !!(data && data.level && playbackProvider !== 'unm' && playbackQualityWasDowngraded(requestedQuality, data.level, playbackProvider));
       if (qualityDowngraded) markPlaybackQualityRuntimeCap(song, playbackProvider, data.level, 'resolved-lower');
-      if (!opts.startupAutoplay && !isQQPlayback && qualityDowngraded) {
+      if (playbackProvider === 'unm') {
+        // UNM 解锁地址按标准音质处理，不参与平台音质降级提示。
+      } else if (!opts.startupAutoplay && !isQQPlayback && qualityDowngraded) {
         showSourceFallbackNotice((isKugouPlayback ? '酷狗' : (isQishuiPlayback ? '汽水' : '网易云')) + '音质自动降级', '请求 ' + playbackQualityLabel(requestedQuality, playbackProvider) + '，实际播放 ' + resolvedQualityText + '。');
       } else if (!opts.startupAutoplay && opts.qualitySwitch) {
         showSourceFallbackNotice('音质已切换', '实际播放: ' + resolvedQualityText + '。');

@@ -133,6 +133,11 @@ const {
   readCuefieldFeedbackStats,
 } = require('./cuefield/feedback-log');
 const { planCuefieldTransitionFromCache } = require('./cuefield/mineradio-bridge');
+const {
+  getUnmConfigForClient,
+  updateUnmConfig: saveUnmConfigPatch,
+  unblockMatch,
+} = require('./unm-unblock');
 
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -1208,6 +1213,106 @@ function classifyNeteasePlaybackRestriction(lastData, loginInfo) {
     return playbackRestriction('netease', 'copyright_unavailable', '网易云版权暂不可播，换源或稍后重试会更稳', 'switch_source', { code, fee });
   }
   return playbackRestriction('netease', 'url_unavailable', '网易云没有返回可播放地址，可能是版权、会员或地区限制', loggedIn ? 'switch_source' : 'login', { code, fee });
+}
+// ---------- UNM 音源解锁 ----------
+const unmSongUrlCache = new Map();
+const UNM_SONG_URL_CACHE_LIMIT = 240;
+const UNM_SONG_URL_CACHE_TTL_MS = 30 * 60 * 1000;
+const unmInflightByCacheKey = new Map();
+
+function unmPlaybackCacheKey(id, hints) {
+  return [
+    String(id || ''),
+    String(hints && (hints.name || hints.title) || ''),
+    String(hints && hints.artist || ''),
+    String(hints && hints.album || ''),
+    String(hints && hints.duration || ''),
+  ].join('|');
+}
+
+function rememberUnmSongUrl(key, value) {
+  if (unmSongUrlCache.size >= UNM_SONG_URL_CACHE_LIMIT) {
+    const oldest = unmSongUrlCache.keys().next().value;
+    if (oldest != null) unmSongUrlCache.delete(oldest);
+  }
+  unmSongUrlCache.set(key, { at: Date.now(), value });
+}
+
+function readUnmSongUrlCache(key) {
+  const cached = unmSongUrlCache.get(key);
+  if (!cached) return null;
+  if (Date.now() - cached.at > UNM_SONG_URL_CACHE_TTL_MS) {
+    unmSongUrlCache.delete(key);
+    return null;
+  }
+  return cached.value;
+}
+
+async function resolveUnmPlaybackForRequest(query) {
+  query = query || {};
+  const id = String(query.id || '').trim();
+  const cacheKey = unmPlaybackCacheKey(id, query);
+  const cached = readUnmSongUrlCache(cacheKey);
+  if (cached && cached.url) return { ...cached, ok: true, cached: true };
+  if (cached && !cached.url) {
+    return { ok: false, error: cached.error || 'UNM_MATCH_FAILED', message: cached.message || '' };
+  }
+  let inflight = unmInflightByCacheKey.get(cacheKey);
+  if (!inflight) {
+    inflight = unblockMatch(id, query, Number(query.timeoutMs) || 9000).finally(() => {
+      unmInflightByCacheKey.delete(cacheKey);
+    });
+    unmInflightByCacheKey.set(cacheKey, inflight);
+  }
+  const result = await inflight;
+  if (result.ok) {
+    rememberUnmSongUrl(cacheKey, { url: result.url, source: result.source, br: result.br });
+  } else if (result.error !== 'UNM_MATCH_TIMEOUT') {
+    rememberUnmSongUrl(cacheKey, { url: '', error: result.error, message: result.message || '' });
+  }
+  return result;
+}
+
+function unmPlaybackResponse(result) {
+  const base = {
+    provider: 'unm',
+    source: 'unm',
+    unmSource: result.source || '',
+    playable: !!result.url,
+  };
+  if (!result.ok) {
+    return {
+      ...base,
+      url: '',
+      trial: false,
+      error: result.error || 'UNM_MATCH_FAILED',
+      message: result.message || 'UNM 未找到可播放音源',
+    };
+  }
+  return {
+    ...base,
+    url: result.url,
+    trial: false,
+    level: 'standard',
+    quality: 'UNM · ' + (result.source || 'match'),
+    br: result.br || 0,
+    md5: result.md5 || '',
+    size: result.size || 0,
+    restriction: null,
+    reason: '',
+    message: '',
+  };
+}
+
+function neteaseUnmMatchHints(matchHints) {
+  matchHints = matchHints || {};
+  return {
+    name: matchHints.name || matchHints.title || '',
+    artist: matchHints.artist || '',
+    album: matchHints.album || '',
+    duration: Number(matchHints.duration) || 0,
+    excludeIds: matchHints.excludeIds || '',
+  };
 }
 function classifyQQPlaybackRestriction(info, session) {
   const hasSession = typeof session === 'object' ? !!session.hasSession : !!session;
@@ -4253,7 +4358,17 @@ async function handleSongUrl(id, loginInfo, qualityPreference, matchHints) {
   if (direct && direct.url && !direct.trial) return direct;
   const sourceMatchAttempted = !!(String(hints.name || hints.title || '').trim() && String(hints.artist || '').trim());
   const matched = await resolveNeteaseSameTrackPlayback(id, loginInfo, qualityPreference, hints, requestDeadline);
-  if (!matched) return { ...direct, sourceMatchAttempted };
+  if (!matched) {
+    // 网易云自身拿不到完整音源时，交给 UNM 从其它公开音源解锁。
+    try {
+      const unmQuery = neteaseUnmMatchHints(hints);
+      const unmResult = await resolveUnmPlaybackForRequest({ id: String(id || ''), ...unmQuery });
+      if (unmResult.ok) return unmPlaybackResponse(unmResult);
+    } catch (err) {
+      console.warn('[SongUrl][UNM]', err && (err.code || err.message));
+    }
+    return { ...direct, sourceMatchAttempted };
+  }
   return {
     ...matched.playback,
     provider: 'netease',
@@ -5235,12 +5350,27 @@ const server = http.createServer(async (req, res) => {
 
   if (pn === '/api/spotify/song/url') {
     try {
-      sendJSON(res, await handleSpotifySongUrl({
+      const spotifyInfo = await handleSpotifySongUrl({
         id: url.searchParams.get('id') || '',
         providerSongId: url.searchParams.get('providerSongId') || '',
         spotifyId: url.searchParams.get('spotifyId') || '',
         uri: url.searchParams.get('uri') || '',
-      }));
+      });
+      if (!spotifyInfo.url) {
+        try {
+          const unmResult = await resolveUnmPlaybackForRequest({
+            id: String(url.searchParams.get('id') || ''),
+            name: url.searchParams.get('name') || '',
+            artist: url.searchParams.get('artist') || '',
+            album: url.searchParams.get('album') || '',
+            duration: Number(url.searchParams.get('duration')) || 0,
+          });
+          if (unmResult.ok) { sendJSON(res, unmPlaybackResponse(unmResult)); return; }
+        } catch (err) {
+          console.warn('[SpotifySongUrl][UNM]', err && (err.code || err.message));
+        }
+      }
+      sendJSON(res, spotifyInfo);
     } catch (err) {
       console.error('[SpotifySongUrl]', err);
       sendJSON(res, { provider: 'spotify', url: '', playable: false, error: err.message }, 500);
@@ -5519,7 +5649,7 @@ const server = http.createServer(async (req, res) => {
 
   if (pn === '/api/qishui/song/url') {
     try {
-      sendJSON(res, await handleQishuiSongUrl({
+      const qishuiInfo = await handleQishuiSongUrl({
         id: url.searchParams.get('id') || url.searchParams.get('trackId') || '',
         quality: url.searchParams.get('quality') || '',
         vipRequired: url.searchParams.get('vipRequired') || '',
@@ -5527,7 +5657,22 @@ const server = http.createServer(async (req, res) => {
         onlyVipPlayable: url.searchParams.get('onlyVipPlayable') || url.searchParams.get('only_vip_playable') || '',
         privilege: url.searchParams.get('privilege') || url.searchParams.get('mediaPrivilege') || url.searchParams.get('media_privilege') || '',
         fee: url.searchParams.get('fee') || '',
-      }, qishuiCookie));
+      }, qishuiCookie);
+      if (!qishuiInfo.url || qishuiInfo.trial) {
+        try {
+          const unmResult = await resolveUnmPlaybackForRequest({
+            id: String(url.searchParams.get('id') || url.searchParams.get('trackId') || ''),
+            name: url.searchParams.get('name') || '',
+            artist: url.searchParams.get('artist') || '',
+            album: url.searchParams.get('album') || '',
+            duration: Number(url.searchParams.get('duration')) || 0,
+          });
+          if (unmResult.ok) { sendJSON(res, unmPlaybackResponse(unmResult)); return; }
+        } catch (err) {
+          console.warn('[QishuiSongUrl][UNM]', err && (err.code || err.message));
+        }
+      }
+      sendJSON(res, qishuiInfo);
     } catch (err) {
       console.error('[QishuiSongUrl]', err);
       sendJSON(res, { provider: 'qishui', url: '', playable: false, error: err.message }, 500);
@@ -5563,6 +5708,20 @@ const server = http.createServer(async (req, res) => {
         privilege: url.searchParams.get('privilege') || url.searchParams.get('mediaPrivilege') || url.searchParams.get('media_privilege') || '',
         fee: url.searchParams.get('fee') || '',
       }, kugouCookie);
+      if (!kugouInfo.url || kugouInfo.trial) {
+        try {
+          const unmResult = await resolveUnmPlaybackForRequest({
+            id: String(url.searchParams.get('hash') || url.searchParams.get('id') || ''),
+            name: url.searchParams.get('name') || '',
+            artist: url.searchParams.get('artist') || '',
+            album: url.searchParams.get('album') || '',
+            duration: Number(url.searchParams.get('duration')) || 0,
+          });
+          if (unmResult.ok) { sendJSON(res, unmPlaybackResponse(unmResult)); return; }
+        } catch (err) {
+          console.warn('[KugouSongUrl][UNM]', err && (err.code || err.message));
+        }
+      }
       sendJSON(res, info);
     } catch (err) {
       console.error('[KugouSongUrl]', err);
@@ -5709,6 +5868,20 @@ const server = http.createServer(async (req, res) => {
         fee: url.searchParams.get('fee') || ''
       };
       const info = await handleQQSongUrl(mid, mediaMid, quality, playbackHints);
+      if (!info.url || info.trial) {
+        try {
+          const unmResult = await resolveUnmPlaybackForRequest({
+            id: String(mid || ''),
+            name: url.searchParams.get('name') || '',
+            artist: url.searchParams.get('artist') || '',
+            album: url.searchParams.get('album') || '',
+            duration: Number(url.searchParams.get('duration')) || 0,
+          });
+          if (unmResult.ok) { sendJSON(res, unmPlaybackResponse(unmResult)); return; }
+        } catch (err) {
+          console.warn('[QQSongUrl][UNM]', err && (err.code || err.message));
+        }
+      }
       sendJSON(res, info);
     } catch (err) {
       console.error('[QQSongUrl]', err);
@@ -6051,6 +6224,7 @@ const server = http.createServer(async (req, res) => {
     try {
       const sid = url.searchParams.get('id');
       const quality = url.searchParams.get('quality') || '';
+      const unmForce = /^(1|true|yes)$/i.test(String(url.searchParams.get('unm') || ''));
       const matchHints = {
         name: url.searchParams.get('name') || '',
         artist: url.searchParams.get('artist') || '',
@@ -6064,6 +6238,10 @@ const server = http.createServer(async (req, res) => {
       };
       const loginInfo = await getPlaybackLoginInfo();
       const info = await handleSongUrl(sid, loginInfo, quality, matchHints);
+      if (unmForce && (!info.url || info.trial)) {
+        const unmResult = await resolveUnmPlaybackForRequest({ id: String(sid || ''), ...neteaseUnmMatchHints(matchHints) });
+        if (unmResult.ok) { sendJSON(res, { ...unmPlaybackResponse(unmResult), loggedIn: loginInfo.loggedIn }); return; }
+      }
       sendJSON(res, {
         ...info,
         loggedIn: loginInfo.loggedIn,
@@ -6074,6 +6252,41 @@ const server = http.createServer(async (req, res) => {
         vipLabel: loginInfo.vipLabel || '无VIP',
       });
     } catch (err) { console.error('[SongUrl]', err); sendJSON(res, { error: err.message }, 500); }
+    return;
+  }
+
+  // ---------- UNM 音源解锁 ----------
+  if (pn === '/api/unm/config' && req.method === 'POST') {
+    try {
+      const body = await readRequestBody(req);
+      sendJSON(res, saveUnmConfigPatch(body));
+    } catch (err) {
+      console.error('[UnmConfig]', err);
+      sendJSON(res, { ok: false, error: err.message }, 500);
+    }
+    return;
+  }
+
+  if (pn === '/api/unm/config') {
+    sendJSON(res, getUnmConfigForClient());
+    return;
+  }
+
+  if (pn === '/api/unm/url') {
+    try {
+      const query = {
+        id: url.searchParams.get('id') || '',
+        name: url.searchParams.get('name') || url.searchParams.get('title') || '',
+        artist: url.searchParams.get('artist') || '',
+        album: url.searchParams.get('album') || '',
+        duration: Number(url.searchParams.get('duration')) || 0,
+      };
+      const result = await resolveUnmPlaybackForRequest(query);
+      sendJSON(res, unmPlaybackResponse(result));
+    } catch (err) {
+      console.error('[UnmUrl]', err);
+      sendJSON(res, { provider: 'unm', url: '', playable: false, error: err.message }, 500);
+    }
     return;
   }
 
